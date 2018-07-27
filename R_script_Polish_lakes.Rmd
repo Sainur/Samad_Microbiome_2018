@@ -1,0 +1,1024 @@
+#Title: Niche Differentiation of Pelagic Microbes in Artificially Warmed Lakes  
+#### R scripts 
+####Pre-processing summary
+####Samples were rarified to 3000 OTUs 
+
+#### Install and run R packages
+```{r Load libraries and data}
+library(phyloseq)  
+library(ggplot2)
+library(plyr)
+library(reshape)
+library(reshape2)
+library(dplyr)
+library(vegan)
+
+uzdir <- "/Users/Sainur/Desktop/HJ/rarefaction/polish_lakes/"
+otutable_biom_file <- paste(uzdir, "60_PolishLakes_merged_otu_table_3000.json", sep ="")
+#map_file <- paste(uzdir, "MetaData_HJ_Polish_lakes.txt", sep = "")
+map_file <- paste(uzdir, "MetaData_HJ_Polish_lakes_with_alpha_diversity.txt", sep = "")
+
+library(ape)
+tree = read.tree ("/Users/Sainur/Desktop/HJ/rarefaction/polish_lakes/rep_set.tre")
+
+
+```
+
+```{r Create phyloseq object}
+
+# Now import the .biom-formatted otu_table-tax_table file.
+
+biom_otu_tax <- import_biom(otutable_biom_file)
+
+# Add sample data to the dataset using merge
+bmsd <- import_qiime_sample_data(map_file)
+class(bmsd)
+dim(bmsd)
+sample_data(bmsd)
+biom_otu_tax
+
+
+##### Merge into phyloseq format
+HJ_phyloseq <- merge_phyloseq(biom_otu_tax, bmsd)
+HJ_phyloseq
+sample_sums(HJ_phyloseq)
+
+###### Save original phyloseq file
+HJ_phyloseq0 = HJ_phyloseq
+```
+
+##### Create average result for multiple rarefaction by transforming data using (divide by 10) and check counts per sample
+```{r Create average result for multiple rarefaction by transforming data using (divide by 10), results='markup'}
+HJ_phyloseq = transform_sample_counts(HJ_phyloseq, function(x) x/10)
+sample_sums(HJ_phyloseq)
+```
+
+##### Round and confirm count number
+```{r Round and confirm count number, results='markup'}
+HJ_phyloseq = transform_sample_counts(HJ_phyloseq, round)
+sample_sums(HJ_phyloseq)
+#check that all numbers are integers
+otu_table_df<- as.data.frame(otu_table(HJ_phyloseq))
+```
+
+##### Check that all OTUs have representative counts  
+```{r identify taxa with only zeros, results='markup', echo=TRUE}
+any(taxa_sums(HJ_phyloseq) < 1)
+sum(taxa_sums(HJ_phyloseq) < 1)
+```
+
+##### Prune taxa with less than 1 count and check taxa numbers again
+```{r  Save original file and create new file with only present (no zeroes) taxa, results='markup', echo=TRUE}
+
+#Create new file with only present (no zeroes) taxa
+
+HJ_phyloseq = prune_taxa(taxa_sums(HJ_phyloseq) > 1, HJ_phyloseq)
+any(sample_sums(HJ_phyloseq) < 1)
+sum(taxa_sums(HJ_phyloseq) < 1)
+```
+
+
+###Compare sequences per sample or OTU
+```{r Compare sequences per sample or OTU}
+readsumsdf = data.frame(nreads = sort(taxa_sums(HJ_phyloseq), TRUE), sorted = 1:ntaxa(HJ_phyloseq), 
+                        type = "OTU")
+readsumsdf = rbind(readsumsdf, data.frame(nreads = sort(sample_sums(HJ_phyloseq), 
+                                                        TRUE), sorted = 1:nsamples(HJ_phyloseq), type = "Samples"))
+title = "Total number of reads"
+p = ggplot(readsumsdf, aes(x = sorted, y = nreads)) + geom_bar(stat = "identity")
+p + ggtitle(title) + scale_y_log10() + facet_wrap(~type, 1, scales = "free")
+```
+
+```{r}
+sample_variables(HJ_phyloseq)
+```
+
+```{r Attached OTU ID}
+tax_table(HJ_phyloseq) <- cbind(tax_table(HJ_phyloseq), OTU=taxa_names(HJ_phyloseq))
+```
+
+```{r Rename Ranks}
+colnames(tax_table(HJ_phyloseq)) = c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species", "OTU" )
+```
+
+##### Subset samples by experiment
+```{r}
+
+HJ_phyloseq_Poland_Copepods = subset_samples(HJ_phyloseq, Microbiome == "Copepods")
+HJ_phyloseq_Poland_Cladocerans = subset_samples(HJ_phyloseq, Microbiome == "Cladocerans")
+
+HJ_phyloseq_Poland_Phytoplankton = subset_samples(HJ_phyloseq, Microbiome == "Phytoplankton")
+
+HJ_phyloseq_Poland_Bacterioplankton= subset_samples(HJ_phyloseq, Microbiome == "Bacterioplankton")
+
+```
+
+
+
+#Indicator Species Analysis
+```{r}
+library(labdsv)
+library(indicspecies)
+#####Note: Data needs to be in two separate data objects: (1) Species abundance matrix (called ‘abundmatrix’ here) and (2) a data frame (called ‘sdf’ here) containing the grouping variable. The basic indval() command will produce a large output of the many values calculated, including relative frequency (relfrq), relative abundance (relabu), indicator value (indval), and p-values. The ‘plots$grouping’ argument chooses a single grouping variable (called ‘grouping’ here) from the ‘plots’ data frame.
+#indval(x,clustering,numitr=1000,...)
+#x: a matrix or data.frame of samples with species as columns and samples as rows,or an object of class ‘stride’ from function stride
+
+#Remove taxa not seen more than 3 times in at least 10% of the samples. This protects against an OTU with small mean & trivially large C.V.
+
+GP = filter_taxa(HJ_phyloseq, function(x) sum(x > 3) > (0.1*length(x)), TRUE)
+
+
+# Extract abundance matrix from the phyloseq object
+OTU1 = as(otu_table(GP), "matrix")
+head(OTU1)
+# transpose if necessary (This is necessary for this analysis)
+if(taxa_are_rows(GP)){OTU1 <- t(OTU1)}
+# Coerce to data.frame
+OTUdf = as.data.frame(OTU1)
+head(OTUdf)
+#sort data
+new_df <- OTUdf[ order(row.names(OTUdf)), ]
+r.name=rownames(new_df)
+#arrange the samples like below order
+new_df11 <- new_df[ c( "SLEB1", "SLEB2", "SLEB3", "MIKB1", "MIKB2", "MIKB3", "PATB1", "PATB2", "PATB3", "LICHB1", "LICHB2", "LICHB3", "GOSB1", "GOSB2", "GOSB3","SLED1", "SLED2", "SLED3", "MIKD1", "MIKD2", "MIKD3", "PATD1", "PATD2", "PATD3", "LICHD1", "LICHD2", "LICHD3", "GOSD1", "GOSD2", "GOSD3", "SLEC1", "SLEC2", "SLEC3", "MIKC1", "MIKC2", "MIKC3", "PATC1", "PATC2", "PATC3", "LICHC1", "LICHC2", "LICHC3", "GOSC1", "GOSC2", "GOSC3", "SLEP1", "SLEP2", "SLEP3", "MIKP1", "MIKP2", "MIKP3", "PATP1", "PATP2", "PATP3", "LICHP1", "LICHP2", "LICHP3", "GOSP1", "GOSP2", "GOSP3"), ]
+
+head(new_df11)
+
+#export
+write.csv(new_df11, "/Users/Sainur/Desktop/HJ/indicator.csv")
+####You may need to change the row name. (just delete the first colum and make a new file name, for example: indicator3_3)
+ind_test<- read.csv("/Users/Sainur/Desktop/HJ/indicator3_3.csv", header=T)
+ind_test
+new.name=rownames(ind_test)
+#Make 4 groups according to Microbiom
+groups = c(rep("Bac", 15), rep("Cla", 15), rep("Cop",15), rep("Phy",15))
+groups
+
+##Notes: Parameter alpha is by default set to alpha = 0.05, and hides all species association that are not significant at this level.
+indv = multipatt(ind_test, groups, func = "IndVal.g", duleg=F, control = how(nperm=1000))
+summary(indv)
+##In order to know which species are those, one has to inspect the object sign returned by multipatt:
+table_p.value  <- indv$sign
+write.csv(table_p.value,"/Users/Sainur/Desktop/HJ/indicator_sig_table3_3.csv")
+
+onlysigOTU_p1 <- subset_taxa(HJ_phyloseq, OTU=="AB154307.1.1434"|
+OTU=="AB661551.1.1458"|
+OTU=="AB690722.1.1296"|
+OTU=="AB753878.1.1447"|
+OTU=="AB753922.1.1459"|
+OTU=="AB806518.1.1446"|
+OTU=="AB930558.1.1451"|
+OTU=="AF361205.1.1491"|
+OTU=="AF418961.1.1506"|
+OTU=="AF493635.1.1300"|
+OTU=="AF529117.1.1420"|
+OTU=="AJ536838.1.1378"|
+OTU=="AM230494.1.1503"|
+OTU=="ANFY01000003.289752.291219"|
+OTU=="AUSH02000015.468.1961"|
+OTU=="AY168735.1.1306"|
+OTU=="AY447040.1.1494"|
+OTU=="AY466490.1.1213"|
+OTU=="AY752098.1.1391"|
+OTU=="AY752119.1.1395"|
+OTU=="AY752128.1.1414"|
+OTU=="AY921960.1.1345"|
+OTU=="AY948005.1.1440"|
+OTU=="AYPR01000038.52.1523"|
+OTU=="CU918585.1.1306"|
+OTU=="DQ316371.1.1498"|
+OTU=="DQ316373.1.1526"|
+OTU=="DQ316384.1.1482"|
+OTU=="DQ521525.1.1438"|
+OTU=="EF471629.1.1438"|
+OTU=="EF520410.1.1418"|
+OTU=="EF520552.1.1465"|
+OTU=="EF520595.1.1473"|
+OTU=="EU117811.1.1506"|
+OTU=="EU234319.1.1490"|
+OTU=="EU703338.1.1342"|
+OTU=="EU703418.1.1485"|
+OTU=="EU800121.1.1312"|
+OTU=="EU800831.1.1486"|
+OTU=="EU801039.1.1483"|
+OTU=="EU801647.1.1478"|
+OTU=="EU801876.1.1485"|
+OTU=="EU937955.1.1474"|
+OTU=="FJ382059.1.1209"|
+OTU=="FJ382196.1.1372"|
+OTU=="FJ484550.1.1355"|
+OTU=="FJ502260.1.1488"|
+OTU=="FJ572664.1.1483"|
+OTU=="FJ592644.1.1224"|
+OTU=="FJ612159.1.1423"|
+OTU=="FJ612200.1.1491"|
+OTU=="FJ820388.1.1423"|
+OTU=="FJ820479.1.1477"|
+OTU=="FJ820482.1.1477"|
+OTU=="FJ827858.1.1495"|
+OTU=="FJ946569.1.1290"|
+OTU=="FJ947138.1.1499"|
+OTU=="FM200864.1.1352"|
+OTU=="FM201052.1.1344"|
+OTU=="FN421512.1.1361"|
+OTU=="FN668038.1.1504"|
+OTU=="FN668055.1.1412"|
+OTU=="FN668062.1.1473"|
+OTU=="FN668098.1.1488"|
+OTU=="FN668106.1.1476"|
+OTU=="FN668126.1.1484"|
+OTU=="FN668139.1.1473"|
+OTU=="FN668148.1.1473"|
+OTU=="FN668181.1.1494"|
+OTU=="FN668188.1.1485"|
+OTU=="FN668191.1.1477"|
+OTU=="FN668214.1.1474"|
+OTU=="FN668259.1.1474"|
+OTU=="FN668262.1.1467"|
+OTU=="FN668271.1.1326"|
+OTU=="FN668275.1.1286"|
+OTU=="FN668303.1.1462"|
+OTU=="FN668308.1.1471"|
+OTU=="FN668354.1.1476"|
+OTU=="FN794266.1.1442"|
+OTU=="FN824908.1.1282"|
+OTU=="FQ658568.1.1343"|
+OTU=="FQ658932.1.1312"|
+OTU=="FQ659763.1.1283"|
+OTU=="FR772057.1.1466"|
+OTU=="FR772074.1.1464"|
+OTU=="FR774633.1.1303"|
+OTU=="FR823005.1.1439"|
+OTU=="GDHX01215817.4.1477"|
+OTU=="GQ099813.1.1347"|
+OTU=="GQ144413.1.1379"|
+OTU=="GQ263306.1.1429"|
+OTU=="GQ263344.1.1456"|
+OTU=="GQ340074.1.1468"|
+OTU=="GQ389095.1.1445"|
+OTU=="GQ390219.1.1456"|
+OTU=="GQ390228.1.1437"|
+OTU=="GQ396960.1.1456"|
+OTU=="GQ397014.1.1469"|
+OTU=="GQ402766.1.1408"|
+OTU=="GQ500814.1.1436"|
+OTU=="GQ500892.1.1448"|
+OTU=="GQ870455.1.1457"|
+OTU=="GU120578.1.1440"|
+OTU=="GU127206.1.1228"|
+OTU=="GU127276.1.1220"|
+OTU=="GU134623.1.1403"|
+OTU=="GU293203.1.1475"|
+OTU=="GU295969.1.1408"|
+OTU=="GU305706.1.1485"|
+OTU=="GU305721.1.1496"|
+OTU=="GU305742.1.1480"|
+OTU=="GU305760.1.1474"|
+OTU=="GU305765.1.1485"|
+OTU=="GU305778.1.1502"|
+OTU=="GU305795.1.1496"|
+OTU=="GU305803.1.1484"|
+OTU=="GU305850.1.1452"|
+OTU=="GU305853.1.1450"|
+OTU=="GU472712.1.1450"|
+OTU=="HE574392.1.1305"|
+OTU=="HE583160.1.1379"|
+OTU=="HE589843.1.1459"|
+OTU=="HE998782.1.1417"|
+OTU=="HK555864.1.1483"|
+OTU=="HK556560.1.1527"|
+OTU=="HM069053.1.1447"|
+OTU=="HM126781.1.1455"|
+OTU=="HM127377.1.1441"|
+OTU=="HM128425.1.1438"|
+OTU=="HM128604.1.1442"|
+OTU=="HM128717.1.1432"|
+OTU=="HM128951.1.1451"|
+OTU=="HM129033.1.1447"|
+OTU=="HM129375.1.1455"|
+OTU=="HM129427.1.1440"|
+OTU=="HM129561.1.1443"|
+OTU=="HM129595.1.1447"|
+OTU=="HM129636.1.1445"|
+OTU=="HM129796.1.1447"|
+OTU=="HM129990.1.1435"|
+OTU=="HM185888.1.1371"|
+OTU=="HM263347.1.1344"|
+OTU=="HM326201.1.1345"|
+OTU=="HM446104.1.1450"|
+OTU=="HM638233.1.1390"|
+OTU=="HM856394.1.1444"|
+OTU=="HM856412.1.1437"|
+OTU=="HM856413.1.1459"|
+OTU=="HM856448.1.1440"|
+OTU=="HM856480.1.1443"|
+OTU=="HM856482.1.1436"|
+OTU=="HM856568.1.1440"|
+OTU=="HQ111526.1.1402"|
+OTU=="HQ115551.1.1213"|
+OTU=="HQ178716.1.1411"|
+OTU=="HQ178852.1.1434"|
+OTU=="HQ219919.1.1407"|
+OTU=="HQ532656.1.1513"|
+OTU=="HQ856435.1.1447"|
+OTU=="JF139490.1.1343"|
+OTU=="JF265791.1.1314"|
+OTU=="JF501055.1.1349"|
+OTU=="JF697392.1.1466"|
+OTU=="JF697432.1.1492"|
+OTU=="JF715448.1.1336"|
+OTU=="JN035169.1.1231"|
+OTU=="JN232894.1.1452"|
+OTU=="JN626666.1.1336"|
+OTU=="JN626727.1.1334"|
+OTU=="JN656723.1.1490"|
+OTU=="JN868729.1.1508"|
+OTU=="JN868756.1.1531"|
+OTU=="JN869032.1.1484"|
+OTU=="JN869113.1.1505"|
+OTU=="JN869123.1.1501"|
+OTU=="JQ905994.1.1345"|
+OTU=="JX114362.1.1470"|
+OTU=="JX222852.1.1443"|
+OTU=="JX304649.1.1325"|
+OTU=="JX406245.1.1480"|
+OTU=="JX521044.1.1482"|
+OTU=="JX521426.1.1486"|
+OTU=="KC189643.1.1486"|
+OTU=="KC620753.1.1476"|
+OTU=="KF064814.1.1344"|
+OTU=="KF441562.1.1494"|
+OTU=="KF596564.1.1479"|
+OTU=="KM051660.1.1454"|
+OTU=="KM105805.1.1457"|
+OTU=="KP745046.1.1444"|
+OTU=="KP866212.1.1451"|
+OTU=="KU514515.1.1475"|
+OTU=="KX163603.1.1375"|
+OTU=="New.CleanUp.ReferenceOTU102019"|
+OTU=="New.CleanUp.ReferenceOTU103146"|
+OTU=="New.CleanUp.ReferenceOTU107667"|
+OTU=="New.CleanUp.ReferenceOTU121430"|
+OTU=="New.CleanUp.ReferenceOTU123418"|
+OTU=="New.CleanUp.ReferenceOTU131884"|
+OTU=="New.CleanUp.ReferenceOTU137586"|
+OTU=="New.CleanUp.ReferenceOTU155956"|
+OTU=="New.CleanUp.ReferenceOTU15686"|
+OTU=="New.CleanUp.ReferenceOTU2558"|
+OTU=="New.CleanUp.ReferenceOTU47925"|
+OTU=="New.CleanUp.ReferenceOTU51707"|
+OTU=="New.CleanUp.ReferenceOTU6011"|
+OTU=="New.CleanUp.ReferenceOTU60660"|
+OTU=="New.CleanUp.ReferenceOTU66231"|
+OTU=="New.CleanUp.ReferenceOTU66429"|
+OTU=="New.CleanUp.ReferenceOTU72144"|
+OTU=="New.CleanUp.ReferenceOTU7427"|
+OTU=="New.CleanUp.ReferenceOTU75781"|
+OTU=="New.CleanUp.ReferenceOTU77685"|
+OTU=="New.ReferenceOTU113"|
+OTU=="New.ReferenceOTU12"|
+OTU=="New.ReferenceOTU144"|
+OTU=="New.ReferenceOTU155"|
+OTU=="New.ReferenceOTU158"|
+OTU=="New.ReferenceOTU17"|
+OTU=="New.ReferenceOTU178"|
+OTU=="New.ReferenceOTU179"|
+OTU=="New.ReferenceOTU183"|
+OTU=="New.ReferenceOTU194"|
+OTU=="New.ReferenceOTU2"|
+OTU=="New.ReferenceOTU211"|
+OTU=="New.ReferenceOTU212"|
+OTU=="New.ReferenceOTU227"|
+OTU=="New.ReferenceOTU245"|
+OTU=="New.ReferenceOTU247"|
+OTU=="New.ReferenceOTU281"|
+OTU=="New.ReferenceOTU294"|
+OTU=="New.ReferenceOTU310"|
+OTU=="New.ReferenceOTU313"|
+OTU=="New.ReferenceOTU324"|
+OTU=="New.ReferenceOTU325"|
+OTU=="New.ReferenceOTU334"|
+OTU=="New.ReferenceOTU34"|
+OTU=="New.ReferenceOTU349"|
+OTU=="New.ReferenceOTU353"|
+OTU=="New.ReferenceOTU357"|
+OTU=="New.ReferenceOTU364"|
+OTU=="New.ReferenceOTU370"|
+OTU=="New.ReferenceOTU373"|
+OTU=="New.ReferenceOTU381"|
+OTU=="New.ReferenceOTU386"|
+OTU=="New.ReferenceOTU408"|
+OTU=="New.ReferenceOTU416"|
+OTU=="New.ReferenceOTU420"|
+OTU=="New.ReferenceOTU427"|
+OTU=="New.ReferenceOTU429"|
+OTU=="New.ReferenceOTU44"|
+OTU=="New.ReferenceOTU456"|
+OTU=="New.ReferenceOTU459"|
+OTU=="New.ReferenceOTU460"|
+OTU=="New.ReferenceOTU462"|
+OTU=="New.ReferenceOTU494"|
+OTU=="New.ReferenceOTU52"|
+OTU=="New.ReferenceOTU58"|
+OTU=="New.ReferenceOTU60"|
+OTU=="New.ReferenceOTU63"|
+OTU=="New.ReferenceOTU72"|
+OTU=="New.ReferenceOTU74"|
+OTU=="New.ReferenceOTU8"|
+OTU=="New.ReferenceOTU84"|
+OTU=="U85190.1.1261")
+
+dat_onlysigOTU <- psmelt(onlysigOTU_p1)
+
+write.csv(dat_onlysigOTU, "/Users/Sainur/Desktop/HJ/Poland_indicator_266.csv")
+
+```
+
+
+###Plot alpha diversity
+
+###NB. if you want to calculate and export diversity data then use the below command
+#name1= estimate_richness(HJ_phyloseq, split = TRUE, measures = NULL)
+#write.table(name1, "/Users/Sainur/Desktop/HJ/rarefaction/polish_lakes/name1.txt", sep="\t")
+
+
+```{r Table S1: paired t-test}
+###t-test
+# Paired t-test, #t.test(y1,y2, paired=TRUE) # where y1 and y2 are numeric
+t_test<- read.csv("/Users/Sainur/Desktop/HJ/rarefaction/polish_lakes/MetaData_HJ_Polish_lakes_with_alpha_diversity.csv", header=T)
+
+head(t_test)
+
+
+#### subset function 
+newdata_Bacterioplankton <- subset(t_test, Microbiome == "Bacterioplankton", select=SampleID:Fisher)
+
+newdata_Phytoplankton<- subset(t_test, Microbiome == "Phytoplankton", select=SampleID:Fisher)
+
+newdata_Copepods<- subset(t_test, Microbiome == "Copepods", select=SampleID:Fisher)
+
+newdata_Cladocerans<- subset(t_test, Microbiome == "Cladocerans", select=SampleID:Fisher)
+
+
+###Diversity test (Paired t-test) Copepods vs.Cladocerans vs.Bacterioplankton vs.Phytoplankton
+
+##Shannon
+
+t.test(newdata_Copepods$Shannon, newdata_Cladocerans$Shannon, mu= 0, alt = "two.sided", paired=TRUE, conf.level=0.95)
+#t = 1.641, df = 14, p-value = 0.1231
+
+t.test(newdata_Bacterioplankton$Shannon,newdata_Copepods$Shannon , paired=TRUE, conf.level=0.95)
+#t = 6.9379, df = 14, p-value = 6.895e-06
+
+t.test(newdata_Bacterioplankton$Shannon,newdata_Cladocerans$Shannon, paired=TRUE, conf.level=0.95)
+#t = 11.97, df = 14, p-value = 9.66e-09
+
+t.test(newdata_Phytoplankton$Shannon, newdata_Copepods$Shannon, paired=TRUE, conf.level=0.95)
+#t = 8.7462, df = 14, p-value = 4.778e-07
+
+t.test(newdata_Phytoplankton$Shannon, newdata_Cladocerans$Shannon, paired=TRUE, conf.level=0.95)
+#t = 12.43, df = 14, p-value = 5.943e-09
+
+
+t.test(newdata_Phytoplankton$Shannon,newdata_Bacterioplankton$Shannon, paired=TRUE, conf.level=0.95)
+#t = 5.0815, df = 14, p-value = 0.0001673
+
+
+##Richness
+t.test(newdata_Copepods$Observed ,newdata_Cladocerans$Observed, paired=TRUE, conf.level=0.95)
+#t = 3.2804, df = 14, p-value = 0.005471
+
+t.test(newdata_Bacterioplankton$Observed, newdata_Copepods$Observed, paired=TRUE, conf.level=0.95)
+# t = 6.971, df = 14, p-value = 6.542e-06
+t.test(newdata_Bacterioplankton$Observed, newdata_Cladocerans$Observed, paired=TRUE, conf.level=0.95)
+#t = 16.794, df = 14, p-value = 1.132e-10
+
+t.test(newdata_Phytoplankton$Observed, newdata_Copepods$Observed, paired=TRUE, conf.level=0.95)
+#t = 10.585, df = 14, p-value = 4.598e-08
+t.test(newdata_Phytoplankton$Observed, newdata_Cladocerans$Observed, paired=TRUE, conf.level=0.95)
+#t = 19.275, df = 14, p-value = 1.772e-11
+
+t.test(newdata_Phytoplankton$Observed,newdata_Bacterioplankton$Observed, paired=TRUE, conf.level=0.95)
+#t = 4.4647, df = 14, p-value = 0.0005341
+
+
+
+#Q. Does temperature has any effect on diversity
+t.test(newdata_Copepods$Shannon,newdata_Copepods$Temperature, paired=TRUE, conf.level=0.95)
+#t = -9.3775, df = 14, p-value = 2.058e-07
+t.test(newdata_Cladocerans$Shannon,newdata_Cladocerans$Temperature, paired=TRUE, conf.level=0.95)
+#t = -10.645, df = 14, p-value = 4.283e-08
+
+t.test(newdata_Phytoplankton$Shannon, newdata_Phytoplankton$Temperature, paired=TRUE, conf.level=0.95)
+#t = -8.4231, df = 14, p-value = 7.479e-07
+
+t.test(newdata_Bacterioplankton$Shannon, newdata_Bacterioplankton$Temperature, paired=TRUE, conf.level=0.95)
+#t = -8.9613, df = 14, p-value = 3.569e-07
+
+##Richness
+t.test(newdata_Copepods$Observed,newdata_Copepods$Temperature, paired=TRUE, conf.level=0.95)
+#t = 14.757, df = 14, p-value = 6.313e-10
+
+t.test(newdata_Cladocerans$Observed,newdata_Cladocerans$Temperature, paired=TRUE, conf.level=0.95)
+#t = 17.824, df = 14, p-value = 5.094e-11
+
+t.test(newdata_Phytoplankton$Observed, newdata_Phytoplankton$Temperature, paired=TRUE, conf.level=0.95)
+#t = 36.891, df = 14, p-value = 2.388e-15
+t.test(newdata_Bacterioplankton$Observed, newdata_Bacterioplankton$Temperature, paired=TRUE, conf.level=0.95)
+#t = 33.621, df = 14, p-value = 8.639e-15
+
+```
+
+
+ 
+
+
+```{r Figure 3 Alpha Diversity }
+
+###Figure 3 (Shannon diversity and Richness)
+plot_richness(HJ_phyloseq, x = "Lakes",  measures = c("Observed"), sortby="Observed") + geom_boxplot() + facet_grid(.~Microbiome, drop = TRUE, space = "free", scales = "free") + xlab("Polish Lakes") +ylab("Microbial OTU Diversity (Richness)")
+
+
+plot_richness(HJ_phyloseq, x = "Lakes",  measures = c("Shannon"), sortby="Shannon") + geom_boxplot() + facet_grid(.~Microbiome, drop = TRUE, space = "free", scales = "free") + xlab("Polish Lakes") +ylab("Microbial OTU Diversity (Shannon)")
+
+```
+
+
+```{r  Microbial community analysis}
+
+###Microbial community: 1) Does microbial community in different microbiomes significantly vary? ([F=20.747, p<0.001]) 
+library ("vegan")
+all_OTUs = names(sort(taxa_sums(HJ_phyloseq), TRUE))
+GPex = prune_taxa(all_OTUs, HJ_phyloseq)
+GPdist = phyloseq::distance(GPex, "bray")
+adonis(GPdist ~ Microbiome, as(sample_data(GPex), "data.frame"))
+
+```
+
+
+
+
+```{r envfit function, Figure 6}
+####Figure 6
+###envfit function:It is a vector fitting function. It indicates two things: i) Direction of the gradient and ii) Strength of the gradient (The length of arrow is proportional to the correlation between ordination & environmental variable) It uses the NMDS results and environmental variables. Results: The first two columns give direction cosines of the vectors, and r2 gives the squared correlation coefficient
+##Microbiome: HJ_phyloseq_Poland_Copepods (Only temperature is the signaticant variable (r2 = 0.61, p<0.001))
+##Combining plots
+par(mfrow=c(2,2))
+
+# Extract abundance matrix from the phyloseq object
+OTU1 = as(otu_table(HJ_phyloseq_Poland_Copepods), "matrix")
+# transpose if necessary
+if(taxa_are_rows(HJ_phyloseq_Poland_Copepods)){OTU1 <- t(OTU1)}
+# Coerce to data.frame
+OTUdf = as.data.frame(OTU1)
+#NMDS results
+vare.mds_ <- metaMDS(OTUdf, trace = FALSE)
+
+#Extract the environmental data from the Phyloseq
+sdf_cop <- as(sample_data(HJ_phyloseq_Poland_Copepods), "data.frame")
+sdf_env_cop <- sdf_cop[,12:23]
+
+#Apply the envfit function
+ef_cop <- envfit(vare.mds_, sdf_env_cop, permu = 999)
+ef_cop
+
+#Plot function: Can limit the significant function by using p.max.
+plot(vare.mds_, display = "sites", main="Microbiome: Copepods")
+plot(ef_cop, p.max = 0.05)
+text(vare.mds_, display = "sites", labels=sdf_cop$SampleID, cex= 0.5, pos=2)
+
+
+
+##Plot Surface fitting
+#ef__ <- envfit(vare.mds_ ~ Temperature + pH, sdf_env_cop)
+#plot(vare.mds_, display = "sites")
+#(ef__)
+#tmp <- with(sdf_env_cop, ordisurf(vare.mds_, Temperature, add = TRUE))
+#with(sdf_env_cop, ordisurf(vare.mds_, T, add = TRUE, col = "green4"))
+with(sdf_env_cop, ordisurf(vare.mds_, T, add = TRUE, col = "gray60"))
+
+
+
+##Microbiome: HJ_phyloseq_Poland_Cladocerans (Temperature is the signaticant variable, r2 = 0.50, p<0.05)
+# Extract abundance matrix from the phyloseq object
+OTU1 = as(otu_table(HJ_phyloseq_Poland_Cladocerans), "matrix")
+# transpose if necessary
+if(taxa_are_rows(HJ_phyloseq_Poland_Cladocerans)){OTU1 <- t(OTU1)}
+# Coerce to data.frame
+OTUdf = as.data.frame(OTU1)
+#NMDS results
+vare.mds_ <- metaMDS(OTUdf, trace = FALSE)
+
+#Extract the environmental data from the Phyloseq
+sdf_clad <- as(sample_data(HJ_phyloseq_Poland_Cladocerans), "data.frame")
+sdf_env_clad <- sdf_clad[,12:23]
+
+#Apply the envfit function
+ef_clad <- envfit(vare.mds_, sdf_env_clad, permu = 999)
+ef_clad
+
+#Plot function: Can limit the significant function by using p.max.
+
+plot(vare.mds_, display = "sites", main="Microbiome: Cladocerans")
+plot(ef_clad, p.max = 0.05)
+text(vare.mds_, display = "sites", labels=sdf_clad$SampleID, cex= 0.5, pos=2)
+#with(sdf_env_clad, ordisurf(vare.mds_, T, add = TRUE, col = "green4"))
+with(sdf_env_clad, ordisurf(vare.mds_, T, add = TRUE, col = "gray60"))
+
+
+##Microbiome: HJ_phyloseq_Poland_Bacterioplankton (Only temperature is significant, p<0.001)
+# Extract abundance matrix from the phyloseq object
+OTU1 = as(otu_table(HJ_phyloseq_Poland_Bacterioplankton), "matrix")
+# transpose if necessary
+if(taxa_are_rows(HJ_phyloseq_Poland_Bacterioplankton)){OTU1 <- t(OTU1)}
+# Coerce to data.frame
+OTUdf = as.data.frame(OTU1)
+#NMDS results
+vare.mds_ <- metaMDS(OTUdf, trace = FALSE)
+#Extract the environmental data from the Phyloseq
+sdf_bac <- as(sample_data(HJ_phyloseq_Poland_Bacterioplankton), "data.frame")
+sdf_env_bac <- sdf_bac[,12:23]
+
+#Apply the envfit function
+ef_bac <- envfit(vare.mds_, sdf_env_bac, permu = 999)
+ef_bac
+#Plot function: Can limit the significant function by using p.max.
+
+plot(vare.mds_, display = "sites", main="Microbiome: Bacterioplankton")
+plot(ef_bac, p.max = 0.05)
+text(vare.mds_, display = "sites", labels=sdf_bac$SampleID, cex= 0.5, pos=2)
+#with(sdf_env_bac, ordisurf(vare.mds_, T, add = TRUE, col = "green4"))
+with(sdf_env_bac, ordisurf(vare.mds_, T, add = TRUE, col = "gray60"))
+
+
+##Microbiome: HJ_phyloseq_Poland_Phytoplankton (Temperature is significant, p<0.001)
+# Extract abundance matrix from the phyloseq object
+OTU1 = as(otu_table(HJ_phyloseq_Poland_Phytoplankton), "matrix")
+# transpose if necessary
+if(taxa_are_rows(HJ_phyloseq_Poland_Phytoplankton)){OTU1 <- t(OTU1)}
+# Coerce to data.frame
+OTUdf = as.data.frame(OTU1)
+#NMDS results
+vare.mds_ <- metaMDS(OTUdf, trace = FALSE)
+#Extract the environmental data from the Phyloseq
+sdf_phy <- as(sample_data(HJ_phyloseq_Poland_Phytoplankton), "data.frame")
+sdf_env_phy <- sdf_phy[,12:23]
+
+#Apply the envfit function
+ef_phy <- envfit(vare.mds_, sdf_env_phy, permu = 999)
+ef_phy
+
+#Plot function: Can limit the significant function by using p.max.
+
+plot(vare.mds_, display = "sites", main="Microbiome: Phytoplankton")
+plot(ef_phy, p.max = 0.05)
+text(vare.mds_, display = "sites", labels=sdf_phy$SampleID, cex= 0.5, pos=2)
+#with(sdf_env_phy, ordisurf(vare.mds_, T, add = TRUE, col = "green4"))
+with(sdf_env_phy, ordisurf(vare.mds_, T, add = TRUE, col = "gray60"))
+
+
+#########
+###Extra Figure S4 (When P<1 or to show all the variables)
+par(mfrow=c(2,2))
+
+# Extract abundance matrix from the phyloseq object
+OTU1 = as(otu_table(HJ_phyloseq_Poland_Copepods), "matrix")
+# transpose if necessary
+if(taxa_are_rows(HJ_phyloseq_Poland_Copepods)){OTU1 <- t(OTU1)}
+# Coerce to data.frame
+OTUdf = as.data.frame(OTU1)
+#NMDS results
+vare.mds_ <- metaMDS(OTUdf, trace = FALSE)
+
+#Extract the environmental data from the Phyloseq
+sdf_cop <- as(sample_data(HJ_phyloseq_Poland_Copepods), "data.frame")
+sdf_env_cop <- sdf_cop[,12:23]
+
+#Apply the envfit function
+ef_cop <- envfit(vare.mds_, sdf_env_cop, permu = 999)
+ef_cop
+
+#Plot function: Can limit the significant function by using p.max.
+plot(vare.mds_, display = "sites", main="Microbiome: Copepods")
+plot(ef_cop, p.max = 1)
+text(vare.mds_, display = "sites", labels=sdf_cop$SampleID, cex= 0.5, pos=2)
+
+
+
+##Plot Surface fitting
+#ef__ <- envfit(vare.mds_ ~ Temperature + pH, sdf_env_cop)
+#plot(vare.mds_, display = "sites")
+#(ef__)
+#tmp <- with(sdf_env_cop, ordisurf(vare.mds_, Temperature, add = TRUE))
+#with(sdf_env_cop, ordisurf(vare.mds_, T, add = TRUE, col = "green4"))
+with(sdf_env_cop, ordisurf(vare.mds_, T, add = TRUE, col = "gray60"))
+
+
+
+##Microbiome: HJ_phyloseq_Poland_Cladocerans (Temperature is the signaticant variable, r2 = 0.50, p<0.05)
+# Extract abundance matrix from the phyloseq object
+OTU1 = as(otu_table(HJ_phyloseq_Poland_Cladocerans), "matrix")
+# transpose if necessary
+if(taxa_are_rows(HJ_phyloseq_Poland_Cladocerans)){OTU1 <- t(OTU1)}
+# Coerce to data.frame
+OTUdf = as.data.frame(OTU1)
+#NMDS results
+vare.mds_ <- metaMDS(OTUdf, trace = FALSE)
+
+#Extract the environmental data from the Phyloseq
+sdf_clad <- as(sample_data(HJ_phyloseq_Poland_Cladocerans), "data.frame")
+sdf_env_clad <- sdf_clad[,12:23]
+
+#Apply the envfit function
+ef_clad <- envfit(vare.mds_, sdf_env_clad, permu = 999)
+ef_clad
+
+#Plot function: Can limit the significant function by using p.max.
+
+plot(vare.mds_, display = "sites", main="Microbiome: Cladocerans")
+plot(ef_clad, p.max = 1)
+text(vare.mds_, display = "sites", labels=sdf_clad$SampleID, cex= 0.5, pos=2)
+#with(sdf_env_clad, ordisurf(vare.mds_, T, add = TRUE, col = "green4"))
+with(sdf_env_clad, ordisurf(vare.mds_, T, add = TRUE, col = "gray60"))
+
+
+##Microbiome: HJ_phyloseq_Poland_Bacterioplankton (Only temperature is significant, p<0.001)
+# Extract abundance matrix from the phyloseq object
+OTU1 = as(otu_table(HJ_phyloseq_Poland_Bacterioplankton), "matrix")
+# transpose if necessary
+if(taxa_are_rows(HJ_phyloseq_Poland_Bacterioplankton)){OTU1 <- t(OTU1)}
+# Coerce to data.frame
+OTUdf = as.data.frame(OTU1)
+#NMDS results
+vare.mds_ <- metaMDS(OTUdf, trace = FALSE)
+#Extract the environmental data from the Phyloseq
+sdf_bac <- as(sample_data(HJ_phyloseq_Poland_Bacterioplankton), "data.frame")
+sdf_env_bac <- sdf_bac[,12:23]
+
+#Apply the envfit function
+ef_bac <- envfit(vare.mds_, sdf_env_bac, permu = 999)
+ef_bac
+#Plot function: Can limit the significant function by using p.max.
+
+plot(vare.mds_, display = "sites", main="Microbiome: Bacterioplankton")
+plot(ef_bac, p.max = 1)
+text(vare.mds_, display = "sites", labels=sdf_bac$SampleID, cex= 0.5, pos=2)
+#with(sdf_env_bac, ordisurf(vare.mds_, T, add = TRUE, col = "green4"))
+with(sdf_env_bac, ordisurf(vare.mds_, T, add = TRUE, col = "gray60"))
+
+
+##Microbiome: HJ_phyloseq_Poland_Phytoplankton (Temperature is significant, p<0.001)
+# Extract abundance matrix from the phyloseq object
+OTU1 = as(otu_table(HJ_phyloseq_Poland_Phytoplankton), "matrix")
+# transpose if necessary
+if(taxa_are_rows(HJ_phyloseq_Poland_Phytoplankton)){OTU1 <- t(OTU1)}
+# Coerce to data.frame
+OTUdf = as.data.frame(OTU1)
+#NMDS results
+vare.mds_ <- metaMDS(OTUdf, trace = FALSE)
+#Extract the environmental data from the Phyloseq
+sdf_phy <- as(sample_data(HJ_phyloseq_Poland_Phytoplankton), "data.frame")
+sdf_env_phy <- sdf_phy[,12:23]
+
+#Apply the envfit function
+ef_phy <- envfit(vare.mds_, sdf_env_phy, permu = 999)
+ef_phy
+
+#Plot function: Can limit the significant function by using p.max.
+
+plot(vare.mds_, display = "sites", main="Microbiome: Phytoplankton")
+plot(ef_phy, p.max = 1)
+text(vare.mds_, display = "sites", labels=sdf_phy$SampleID, cex= 0.5, pos=2)
+#with(sdf_env_phy, ordisurf(vare.mds_, T, add = TRUE, col = "green4"))
+with(sdf_env_phy, ordisurf(vare.mds_, T, add = TRUE, col = "gray60"))
+
+```
+
+
+
+###cluster analysis (Figure S2)
+```{r extract taxonomy info as matrix All samples}
+
+
+taxonomy = tax_table(HJ_phyloseq, errorIfNULL=FALSE)
+if( !is.null(taxonomy) ){
+  taxonomy = data.frame(as(taxonomy, "matrix"))
+} 
+
+#extract otu information
+otus <- otu_table(HJ_phyloseq)
+otus_mat <- otus@.Data
+
+
+###Determine number of clusters using elbow graph 
+##r Determine number of clusters using elbow graph}
+#Determine number of clusters
+wss <- (nrow(otus_mat)-1)*sum(apply(otus_mat,2,var))
+for (i in 2:15) wss[i] <- sum(kmeans(otus_mat, 
+    centers=i)$withinss)
+plot(1:15, wss, type="b", xlab="Number of Clusters",
+  ylab="Within groups sum of squares")
+```
+
+
+###Pvclust tree using bray distance and including p values for each node. [AU (approximately unbiased) BP (bootstrap probability)]. Boxes mark clusters with 95% confidence
+```{r Figure S2: Cluster tree}
+library(pvclust)
+library("devtools") # used to source functions from the internet
+source_url("https://raw.githubusercontent.com/nielshanson/mp_tutorial/master/taxonomic_analysis/code/pvclust_bcdist.R")
+# alternatively, you might want to download the above function and load using source()
+# e.g. source('/where/I/downloaded/pvclust_bcdist.R')
+fit <- pvclust(otus_mat, method.hclust="ward", method.dist="bray–curtis", n=1000)
+
+plot(fit) # dendogram with p values
+pvrect(fit, alpha=0.95)
+```
+
+
+
+```{r Figure 2: Most abundant OTU (heatmap), results='markup'}
+####Most abundant OTU (heatmap)
+####Sort the OTUs by abundance and pick the top 30
+top30OTU.names = names(sort(taxa_sums(HJ_phyloseq), TRUE)[1:30])
+####Cut down the physeq.tree data to only the top 10 Phyla
+top30OTU = prune_taxa(top30OTU.names, HJ_phyloseq)
+top30OTU
+plot_heatmap(top30OTU)
+fig2=q+theme_bw()+ 
+theme(legend.text = element_text(face="bold",size = 14),panel.background = element_blank(),axis.title.y = element_text(face="bold",size=14),
+      axis.title.x = element_text(face="bold",size=14),
+      axis.text.x = element_text(angle=90, colour = "black", vjust=1, hjust = 1, size=12),
+       axis.text.y = element_text(angle=0, colour = "black", vjust=0.5, hjust = 1, size=12),
+      
+            panel.border = element_rect(fill = NA, colour = "black", size = 1),
+
+      legend.title =element_text(size = 14,face="bold"))+
+  labs(shape="", colour= "")+xlab("")
+fig2
+
+##OTU
+plot_heatmap(top30OTU, "NMDS", "bray", title="Bray-Curtis", low="white", high="deeppink", na.value="grey", sample.order ="Microbiome")
+
+####All OTUs
+plot_heatmap(HJ_phyloseq)
+figS1=q+theme_bw()+ 
+theme(legend.text = element_text(face="bold",size = 14),panel.background = element_blank(),axis.title.y = element_text(face="bold",size=14),
+      axis.title.x = element_text(face="bold",size=14),
+      axis.text.x = element_text(angle=90, colour = "black", vjust=1, hjust = 1, size=12),
+       axis.text.y = element_text(angle=0, colour = "black", vjust=0.5, hjust = 1, size=12),
+      
+            panel.border = element_rect(fill = NA, colour = "black", size = 1),
+
+      legend.title =element_text(size = 14,face="bold"))+
+  labs(shape="", colour= "")+xlab("")
+figS1
+
+```
+
+
+
+```{r Figure 1: Top 10 phylum Poland}
+GP = HJ_phyloseq
+phylum.sum = tapply(taxa_sums(GP), tax_table(GP)[, "Phylum"], sum, na.rm = TRUE)
+top10phyla = names(sort(phylum.sum, TRUE))[1:10]
+GP1 = prune_taxa((tax_table(GP)[, "Phylum"] %in% top10phyla), GP)
+library(ggplot2)
+library(plyr)
+library(scales)
+library(reshape)
+library(RColorBrewer)
+library(grid)
+speciesList <- tapply(sample_names(GP1), get_variable(GP1, "SampleID"), c)
+speciesPhyseq <- lapply(speciesList, prune_samples, GP1)
+speciesOTUtable <- lapply(speciesPhyseq,otu_table)
+speciesAvg <- lapply(speciesOTUtable,rowMeans)
+pooledOTUtable = t(do.call(rbind,speciesAvg))
+pooledOTUtable = data.frame(OTU=row.names(pooledOTUtable),pooledOTUtable)
+
+
+TT = tax_table(GP1)
+TT = TT[, which(apply(!apply(TT, 2, is.na), 2, any))]
+tdf = data.frame(TT, OTU = taxa_names(GP1))
+pOTUtax = merge(pooledOTUtable, tdf, by.x = "OTU")
+pOTU = data.frame(pOTUtax,SeqTotal = rowSums(pOTUtax[,2:61]))
+pOTU.phylum =pOTU[,c(2:61,
+                     63)]
+melt.phylum = melt(pOTU.phylum,id.vars="Phylum")
+colnames(melt.phylum)[2]="SampleID"
+agg.phylum=aggregate(.~Phylum+SampleID,melt.phylum,sum)
+
+d= ggplot(agg.phylum,aes(x=SampleID,y=value,fill=Phylum))+ geom_bar(stat="identity",position="fill") +  scale_y_continuous(labels = percent_format())
+
+c= d+ xlab("")
+
+b= c+ ylab("Relative Abudance")
+a= b+ scale_fill_manual(name="Phylum",values = c("grey26", "royalblue", "darkorange","chartreuse3",  "red", "#D3D93E", "#ff3cbb","cyan2", "darkgreen",  "mediumorchid3")
+)
+
+z= a+ theme(axis.title.x = element_text(face="bold",size=16),
+            axis.text.x = element_text(face="bold",angle=90, colour = "black", vjust=0.5, hjust = 1, size=16),
+            axis.text.y = element_text(face="bold",colour = "black", size=16),
+            axis.title.y = element_text(face="bold",size=16),
+            plot.title = element_text(size = 18),
+            legend.title =element_text(size = 16,face="bold"),
+            legend.text = element_text(face="bold",size = 16),
+            legend.position="right",
+            legend.key.size = unit(0.7, "cm"),
+            strip.text.x = element_text(size=16, face="bold"),
+            strip.text.y = element_text(size=16, face="bold"),
+            panel.background = element_blank(),
+            panel.border = element_rect(fill = NA, colour = "black"),
+            strip.background = element_rect(colour="black"))
+
+y = z+ guides(fill = guide_legend(reverse = T, ncol=1))
+y
+
+
+p=z + scale_x_discrete(limit = c( "SLEB1", "SLEB2", "SLEB3", "MIKB1", "MIKB2", "MIKB3", "PATB1", "PATB2", "PATB3", "LICHB1", "LICHB2", "LICHB3", "GOSB1", "GOSB2", "GOSB3","SLED1", "SLED2", "SLED3", "MIKD1", "MIKD2", "MIKD3", "PATD1", "PATD2", "PATD3", "LICHD1", "LICHD2", "LICHD3", "GOSD1", "GOSD2", "GOSD3", "SLEC1", "SLEC2", "SLEC3", "MIKC1", "MIKC2", "MIKC3", "PATC1", "PATC2", "PATC3", "LICHC1", "LICHC2", "LICHC3", "GOSC1", "GOSC2", "GOSC3", "SLEP1", "SLEP2", "SLEP3", "MIKP1", "MIKP2", "MIKP3", "PATP1", "PATP2", "PATP3", "LICHP1", "LICHP2", "LICHP3", "GOSP1", "GOSP2", "GOSP3"))
+
+p
+
+```
+
+
+###Figure 5 (Abundance) 
+```{r Methano and Methylotrophs}
+##Only Methano and Methylotrophs ()
+only_methano <- subset_taxa(HJ_phyloseq, OTU=="EU289507.1.1448"|
+OTU=="HM326350.1.1304"|
+OTU=="HQ219919.1.1407"|
+OTU=="New.ReferenceOTU492"|
+OTU=="GQ390219.1.1456"|
+OTU=="New.CleanUp.ReferenceOTU115497"|
+OTU=="New.CleanUp.ReferenceOTU121937"|
+OTU=="New.CleanUp.ReferenceOTU267"|
+OTU=="JQ905994.1.1345"|
+OTU=="New.CleanUp.ReferenceOTU68794"|
+OTU=="New.ReferenceOTU27"|
+OTU=="FJ612112.1.1493"|
+OTU=="FN668038.1.1504"|
+OTU=="GU451500.1.1238"|
+OTU=="AB900973.1.1233"|
+OTU=="AB991243.1.1460")
+
+plot_bar(only_methano, "Lakes", fill="Genus", facet_grid=~Microbiome)
+
+p = plot_bar(only_methano, "Class", fill="Class", facet_grid=Lakes~Microbiome)
+p + geom_bar(aes(color=Class, fill=Class), stat="identity", position="stack")
+
+
+###Genus
+p = plot_bar(only_methano, "Genus", fill="Genus", facet_grid=Lakes~Microbiome)
+p + geom_bar(aes(color=Genus, fill=Genus), stat="identity", position="stack")
+
+###Family:
+p = plot_bar(only_methano, "Family", fill="Family", facet_grid=Lakes~Microbiome)
+p + geom_bar(aes(color=Family, fill=Family), stat="identity", position="stack")
+
+
+library("ape")
+HJ_phyloseq1 <- merge_phyloseq(biom_otu_tax, bmsd, tree,rs_file)
+plot_tree(HJ_phyloseq1)
+
+HJ_phyloseq12 <- merge_phyloseq(only_methano, tree)
+plot_tree(HJ_phyloseq12)
+plot_tree(HJ_phyloseq12, color="Genus", shape="Microbiome", size="abundance")
+
+plot_tree(HJ_phyloseq12, color="Family", shape="Microbiome", size="abundance", label.tips = "Genus")
+
+
+##nodelabf=nodeplotboot()
+plot_tree(HJ_phyloseq12,nodelabf=nodeplotboot(), color="Family", shape="Microbiome", size="abundance", label.tips = "Genus")
+
+
+##Relative abundnace (Figure 5) 
+# transform to proportions
+Relabund = transform_sample_counts(HJ_phyloseq, function(OTU) OTU/sum(OTU))
+library()
+only_methano_rel <- subset_taxa(Relabund, OTU=="EU289507.1.1448"|
+OTU=="HM326350.1.1304"|
+OTU=="HQ219919.1.1407"|
+OTU=="New.ReferenceOTU492"|
+OTU=="GQ390219.1.1456"|
+OTU=="New.CleanUp.ReferenceOTU115497"|
+OTU=="New.CleanUp.ReferenceOTU121937"|
+OTU=="New.CleanUp.ReferenceOTU267"|
+OTU=="JQ905994.1.1345"|
+OTU=="New.CleanUp.ReferenceOTU68794"|
+OTU=="New.ReferenceOTU27"|
+OTU=="FJ612112.1.1493"|
+OTU=="FN668038.1.1504"|
+OTU=="GU451500.1.1238"|
+OTU=="AB900973.1.1233"|
+OTU=="AB991243.1.1460")
+
+
+###Family:
+p = plot_bar(only_methano_rel, "Family", fill="Family", facet_grid=Lakes~Microbiome)+ ylab("Relative Abundance") + ylim(0, 0.03)
+p + geom_bar(aes(color=Family, fill=Family), stat="identity", position="stack")
+
+###Genus
+p = plot_bar(only_methano_rel, "Genus", fill="Genus", facet_grid=Lakes~Microbiome) 
+
+p + geom_bar(aes(color=Genus, fill=Genus), stat="identity", position="stack")
+```
