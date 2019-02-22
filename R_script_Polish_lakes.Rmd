@@ -1,4 +1,5 @@
-#Title: Niche Differentiation of Pelagic Microbes in Artificially Warmed Lakes  
+#TNiche Differentiation of Host-associated Pelagic Microbes and Their Potential Contribution to Biogeochemical Cycling in Artificially Warmed Lakes
+
 #### R scripts 
 ####Pre-processing summary
 ####Samples were rarified to 3000 OTUs 
