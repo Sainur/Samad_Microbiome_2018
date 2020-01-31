@@ -1,4 +1,4 @@
-#TNiche Differentiation of Host-associated Pelagic Microbes and Their Potential Contribution to Biogeochemical Cycling in Artificially Warmed Lakes
+#Niche Differentiation of Host-associated Pelagic Microbes and Their Potential Contribution to Biogeochemical Cycling in Artificially Warmed Lakes
 
 #### R scripts 
 ####Pre-processing summary
@@ -16,7 +16,6 @@ library(vegan)
 
 uzdir <- "/Users/Sainur/Desktop/HJ/rarefaction/polish_lakes/"
 otutable_biom_file <- paste(uzdir, "60_PolishLakes_merged_otu_table_3000.json", sep ="")
-#map_file <- paste(uzdir, "MetaData_HJ_Polish_lakes.txt", sep = "")
 map_file <- paste(uzdir, "MetaData_HJ_Polish_lakes_with_alpha_diversity.txt", sep = "")
 
 library(ape)
@@ -112,6 +111,259 @@ HJ_phyloseq_Poland_Phytoplankton = subset_samples(HJ_phyloseq, Microbiome == "Ph
 
 HJ_phyloseq_Poland_Bacterioplankton= subset_samples(HJ_phyloseq, Microbiome == "Bacterioplankton")
 
+```
+#edgR (Function)
+```{r}
+phyloseq_to_edgeR = function(physeq, group, method="RLE", ...){
+  require("edgeR")
+  require("phyloseq")
+  # Enforce orientation.
+  if( !taxa_are_rows(physeq) ){ physeq <- t(physeq) }
+  x = as(otu_table(physeq), "matrix")
+  # Add one to protect against overflow, log(0) issues.
+  x = x + 1
+  # Check `group` argument
+  if( identical(all.equal(length(group), 1), TRUE) & nsamples(physeq) > 1 ){
+    # Assume that group was a sample variable name (must be categorical)
+    group = get_variable(physeq, group)
+  }
+  # Define gene annotations (`genes`) as tax_table
+  taxonomy = tax_table(physeq, errorIfNULL=FALSE)
+  if( !is.null(taxonomy) ){
+    taxonomy = data.frame(as(taxonomy, "matrix"))
+  } 
+  # Now turn into a DGEList
+  y = DGEList(counts=x, group=group, genes=taxonomy, remove.zeros = TRUE, ...)
+  # Calculate the normalization factors
+  z = calcNormFactors(y, method=method)
+  # Check for division by zero inside `calcNormFactors`
+  if( !all(is.finite(z$samples$norm.factors)) ){
+    stop("Something wrong with edgeR::calcNormFactors on this data,
+         non-finite $norm.factors, consider changing `method` argument")
+  }
+  # Estimate dispersions
+  return(estimateTagwiseDisp(estimateCommonDisp(z)))
+}
+
+####edgR (Copepods)
+kosticB = subset_samples(HJ_phyloseq_Poland_Copepods, group= "Temp_group")
+
+kosticB
+library("DESeq2")
+packageVersion("DESeq2")  #‘1.24.0’
+
+
+kosticp = subset_samples(kosticB, group= "Temp_group")
+
+kosticp = transform_sample_counts(kosticB, function(x){x/sum(x)})
+hist(log10(apply(otu_table(kosticp), 1, var)),
+     xlab="log10(variance)", breaks=50,
+     main="A large fraction of OTUs have very low variance")
+     
+     
+varianceThreshold = 1e-5
+keepOTUs = names(which(apply(otu_table(kosticp), 1, var) > varianceThreshold))
+kosticB = prune_taxa(keepOTUs, kosticB)
+kosticB
+
+dge = phyloseq_to_edgeR(kosticB, group= "Temp_group")
+
+
+# Perform binary test
+et = exactTest(dge)
+# Extract values from test results
+tt = topTags(et, n=nrow(dge$table), adjust.method="BH", sort.by="PValue")
+res = tt@.Data[[1]]
+alpha = 0.05
+sigtab = res[(res$FDR < alpha), ]
+sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(kosticB)[rownames(sigtab), ], "matrix"))
+dim(sigtab)
+head(sigtab)
+
+
+library("ggplot2"); packageVersion("ggplot2")
+theme_set(theme_bw())
+scale_fill_discrete <- function(palname = "Set1", ...) {
+    scale_fill_brewer(palette = palname, ...)
+}
+sigtabgen = subset(sigtab, !is.na(Genus))
+# Phylum order
+x = tapply(sigtabgen$logFC, sigtabgen$Phylum, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Phylum = factor(as.character(sigtabgen$Phylum), levels = names(x))
+# Genus order
+x = tapply(sigtabgen$logFC, sigtabgen$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Genus = factor(as.character(sigtabgen$Genus), levels = names(x))
+pp_cop<- ggplot(sigtabgen, aes(x = Genus, y = logFC, color = Phylum)) + geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5))
+  
+pp_cop  
+
+### edgR (Cladocerans)
+kosticB = subset_samples(HJ_phyloseq_Poland_Cladocerans, group= "Temp_group")
+
+kosticB
+library("DESeq2")
+packageVersion("DESeq2")  #‘1.24.0’
+
+
+kosticp = subset_samples(kosticB, group= "Temp_group")
+
+kosticp = transform_sample_counts(kosticB, function(x){x/sum(x)})
+hist(log10(apply(otu_table(kosticp), 1, var)),
+     xlab="log10(variance)", breaks=50,
+     main="A large fraction of OTUs have very low variance")
+     
+     
+varianceThreshold = 1e-5
+keepOTUs = names(which(apply(otu_table(kosticp), 1, var) > varianceThreshold))
+kosticB = prune_taxa(keepOTUs, kosticB)
+kosticB
+
+dge = phyloseq_to_edgeR(kosticB, group= "Temp_group")
+
+
+# Perform binary test
+et = exactTest(dge)
+# Extract values from test results
+tt = topTags(et, n=nrow(dge$table), adjust.method="BH", sort.by="PValue")
+res = tt@.Data[[1]]
+alpha = 0.05
+sigtab = res[(res$FDR < alpha), ]
+sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(kosticB)[rownames(sigtab), ], "matrix"))
+dim(sigtab)
+head(sigtab)
+
+
+library("ggplot2"); packageVersion("ggplot2")
+theme_set(theme_bw())
+scale_fill_discrete <- function(palname = "Set1", ...) {
+    scale_fill_brewer(palette = palname, ...)
+}
+sigtabgen = subset(sigtab, !is.na(Genus))
+# Phylum order
+x = tapply(sigtabgen$logFC, sigtabgen$Phylum, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Phylum = factor(as.character(sigtabgen$Phylum), levels = names(x))
+# Genus order
+x = tapply(sigtabgen$logFC, sigtabgen$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Genus = factor(as.character(sigtabgen$Genus), levels = names(x))
+pp_cla<- ggplot(sigtabgen, aes(x = Genus, y = logFC, color = Phylum)) + geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5))
+  
+pp_cla
+
+###edgR (Bacterioplankton)
+kosticB = subset_samples(HJ_phyloseq_Poland_Bacterioplankton, group= "Temp_group")
+
+kosticB
+library("DESeq2")
+packageVersion("DESeq2")  #‘1.24.0’
+
+
+kosticp = subset_samples(kosticB, group= "Temp_group")
+
+kosticp = transform_sample_counts(kosticB, function(x){x/sum(x)})
+hist(log10(apply(otu_table(kosticp), 1, var)),
+     xlab="log10(variance)", breaks=50,
+     main="A large fraction of OTUs have very low variance")
+     
+     
+varianceThreshold = 1e-5
+keepOTUs = names(which(apply(otu_table(kosticp), 1, var) > varianceThreshold))
+kosticB = prune_taxa(keepOTUs, kosticB)
+kosticB
+
+dge = phyloseq_to_edgeR(kosticB, group= "Temp_group")
+
+
+# Perform binary test
+et = exactTest(dge)
+# Extract values from test results
+tt = topTags(et, n=nrow(dge$table), adjust.method="BH", sort.by="PValue")
+res = tt@.Data[[1]]
+alpha = 0.05
+sigtab = res[(res$FDR < alpha), ]
+sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(kosticB)[rownames(sigtab), ], "matrix"))
+dim(sigtab)
+head(sigtab)
+
+
+library("ggplot2"); packageVersion("ggplot2")
+theme_set(theme_bw())
+scale_fill_discrete <- function(palname = "Set1", ...) {
+    scale_fill_brewer(palette = palname, ...)
+}
+sigtabgen = subset(sigtab, !is.na(Genus))
+# Phylum order
+x = tapply(sigtabgen$logFC, sigtabgen$Phylum, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Phylum = factor(as.character(sigtabgen$Phylum), levels = names(x))
+# Genus order
+x = tapply(sigtabgen$logFC, sigtabgen$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Genus = factor(as.character(sigtabgen$Genus), levels = names(x))
+pp_BA<- ggplot(sigtabgen, aes(x = Genus, y = logFC, color = Phylum)) + geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5))
+  
+pp_BA  
+
+### edgR (Phytoplankton)
+kosticB = subset_samples(HJ_phyloseq_Poland_Phytoplankton, group= "Temp_group")
+
+kosticB
+library("DESeq2")
+packageVersion("DESeq2")  #‘1.24.0’
+
+
+kosticp = subset_samples(kosticB, group= "Temp_group")
+
+kosticp = transform_sample_counts(kosticB, function(x){x/sum(x)})
+hist(log10(apply(otu_table(kosticp), 1, var)),
+     xlab="log10(variance)", breaks=50,
+     main="A large fraction of OTUs have very low variance")
+     
+     
+varianceThreshold = 1e-5
+keepOTUs = names(which(apply(otu_table(kosticp), 1, var) > varianceThreshold))
+kosticB = prune_taxa(keepOTUs, kosticB)
+kosticB
+
+dge = phyloseq_to_edgeR(kosticB, group= "Temp_group")
+
+
+# Perform binary test
+et = exactTest(dge)
+# Extract values from test results
+tt = topTags(et, n=nrow(dge$table), adjust.method="BH", sort.by="PValue")
+res = tt@.Data[[1]]
+alpha = 0.05
+sigtab = res[(res$FDR < alpha), ]
+sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(kosticB)[rownames(sigtab), ], "matrix"))
+dim(sigtab)
+head(sigtab)
+
+
+library("ggplot2"); packageVersion("ggplot2")
+theme_set(theme_bw())
+scale_fill_discrete <- function(palname = "Set1", ...) {
+    scale_fill_brewer(palette = palname, ...)
+}
+sigtabgen = subset(sigtab, !is.na(Genus))
+# Phylum order
+x = tapply(sigtabgen$logFC, sigtabgen$Phylum, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Phylum = factor(as.character(sigtabgen$Phylum), levels = names(x))
+# Genus order
+x = tapply(sigtabgen$logFC, sigtabgen$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Genus = factor(as.character(sigtabgen$Genus), levels = names(x))
+pp_PA<- ggplot(sigtabgen, aes(x = Genus, y = logFC, color = Phylum)) + geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5))
+  
+pp_PA  
 ```
 
 
